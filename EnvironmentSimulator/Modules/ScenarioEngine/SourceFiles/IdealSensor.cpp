@@ -28,6 +28,7 @@ BaseSensor::BaseSensor(BaseSensor::Type type, double pos_x, double pos_y, double
     pos_.z_global = 0;
 }
 
+// @danilorar: ObjectSensor is THE CLASS that implements the perception model
 ObjectSensor::ObjectSensor(Entities *entities,
                            Object   *refobj,
                            double    pos_x,
@@ -111,6 +112,10 @@ void ObjectSensor::Update()
         if (rel_angle < fovH_ / 2)
         {
             hitList_[nObj_].obj_ = obj;
+            const auto measurement = perception_model_.MeasureDistance(std::sqrt(dist_sq));
+            hitList_[nObj_].true_distance_ = measurement.true_distance;
+            hitList_[nObj_].perceived_distance_ = measurement.perceived_distance;
+            hitList_[nObj_].distance_error_ = measurement.distance_error;
 
             // Calculate hit object position in sensor local coordinates
             double xl, yl;

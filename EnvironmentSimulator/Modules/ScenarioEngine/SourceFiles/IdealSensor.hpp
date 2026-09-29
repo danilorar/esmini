@@ -13,6 +13,7 @@
 #pragma once
 
 #include "ScenarioEngine.hpp"
+#include "PerceptionModel.hpp"
 
 namespace scenarioengine
 {
@@ -50,6 +51,8 @@ namespace scenarioengine
         };
     };
 
+    // @danilorar: ObjectSensor is THE CLASS that implements the perception model and
+    // @danilorar: Controller will use this class to get the perceived distance to objects in the scenario
     class ObjectSensor : public BaseSensor
     {
     public:
@@ -68,6 +71,11 @@ namespace scenarioengine
             double  yaw_;  // Yaw of object in local coordinates from sensor
             double  yawRate_;
             double  yawAcc_;
+
+            // @danilorar:  ObjectSensor class will NOW, store for each detection perceived distance (after noise)
+            double  true_distance_;
+            double  perceived_distance_;
+            double  distance_error_;
         } ObjectHit;
 
         double     near_;     // Near limit field of view, from position of sensor
@@ -94,8 +102,34 @@ namespace scenarioengine
         ~ObjectSensor();
         void Update();
 
+        // @danilorar
+        // Set the perception model mode (IDEAL or NOISY)
+        void SetPerceptionMode(PerceptionModel::Mode mode)
+        {
+            perception_model_.SetMode(mode);
+        }
+
+        // GET the perception model mode (IDEAL or NOISY)
+        PerceptionModel::Mode GetPerceptionMode() const
+        {
+            return perception_model_.GetMode();
+        }
+
+        // Get the number of hits (i.e. number of detected objects)
+        int GetNumberOfHits() const
+        {
+            return nObj_;
+        }
+
+        // Get the hit object at index
+        const ObjectHit& GetHit(int index) const
+        {
+            return hitList_[index];
+        }
+
     private:
         Entities *entities_;  // Reference to the global collection of objects within the scenario
+        PerceptionModel perception_model_;
     };
 
 }  // namespace scenarioengine

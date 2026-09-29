@@ -17,6 +17,7 @@
 #include "ControllerACC.hpp"
 #include "CommonMini.hpp"
 #include "Entities.hpp"
+#include "IdealSensor.hpp"
 #include "playerbase.hpp"
 #include "logger.hpp"
 
@@ -31,13 +32,24 @@ Controller* scenarioengine::InstantiateControllerACC(void* args)
 
 ControllerACC::ControllerACC(InitArgs* args)
     : Controller(args),
+    sensor_(nullptr),
       active_(false),
       timeGap_(1.5),
       setSpeed_(0),
       lateralDist_(5.0),
       currentSpeed_(0),
       setSpeedSet_(false),
-      virtual_(false)
+    virtual_(false),
+    perception_noisy_(false),
+    sensor_x_(4.0),
+    sensor_y_(0.0),
+    sensor_z_(0.5),
+    sensor_heading_(0.0),
+    sensor_near_range_(1.0),
+    sensor_far_range_(80.0),
+    sensor_fov_deg_(70.0),
+    sensor_max_objects_(100),
+    show_sensor_frustum_(false)
 {
     operating_domains_ = static_cast<unsigned int>(ControlDomainMasks::DOMAIN_MASK_LONG);
 
@@ -67,6 +79,35 @@ ControllerACC::ControllerACC(InitArgs* args)
     {
         virtual_ = args->properties->GetValueStr("virtual") == "true" ? true : false;
     }
+    if (args && args->properties && args->properties->ValueExists("perceptionMode"))
+    {
+        perception_noisy_ = args->properties->GetValueStr("perceptionMode") == "noisy";
+    }
+    if (args && args->properties)
+    {
+        if (args->properties->ValueExists("sensorX"))
+            sensor_x_ = strtod(args->properties->GetValueStr("sensorX"));
+        if (args->properties->ValueExists("sensorY"))
+            sensor_y_ = strtod(args->properties->GetValueStr("sensorY"));
+        if (args->properties->ValueExists("sensorZ"))
+            sensor_z_ = strtod(args->properties->GetValueStr("sensorZ"));
+        if (args->properties->ValueExists("sensorHeading"))
+            sensor_heading_ = strtod(args->properties->GetValueStr("sensorHeading"));
+        if (args->properties->ValueExists("sensorNearRange"))
+            sensor_near_range_ = strtod(args->properties->GetValueStr("sensorNearRange"));
+        if (args->properties->ValueExists("sensorFarRange"))
+            sensor_far_range_ = strtod(args->properties->GetValueStr("sensorFarRange"));
+        if (args->properties->ValueExists("sensorFovDeg"))
+            sensor_fov_deg_ = strtod(args->properties->GetValueStr("sensorFovDeg"));
+        if (args->properties->ValueExists("sensorMaxObjects"))
+            sensor_max_objects_ = static_cast<int>(strtol(args->properties->GetValueStr("sensorMaxObjects"), nullptr, 10));
+        if (args->properties->ValueExists("showSensorFrustum"))
+            show_sensor_frustum_ = args->properties->GetValueStr("showSensorFrustum") == "true";
+    }
+    if (args && args->properties && args->properties->ValueExists("logFile"))
+    {
+        log_file_ = args->properties->GetValueStr("logFile");
+    }
 }
 
 void ControllerACC::Init()
@@ -76,17 +117,54 @@ void ControllerACC::Init()
 
 void ControllerACC::InitPostPlayer()
 {
-    // Uncomment line below to enable example how to add sensors. Press 'r' to visualize sensor frustum.
-    // player_->AddObjectSensor(object_, 4.0, 0.0, 0.5, 0.0, 1.0, 50.0, 1.2, 100);
+    sensor_ = player_->GetObjectSensor(object_);
+    if (sensor_ == nullptr)
+    {
+        player_->AddObjectSensor(
+            object_,
+            sensor_x_,
+            sensor_y_,
+            sensor_z_,
+            sensor_heading_,
+            sensor_near_range_,
+            sensor_far_range_,
+            sensor_fov_deg_ * M_PI / 180.0,
+            sensor_max_objects_);
+        sensor_ = player_->GetObjectSensor(object_);
+    }
+
+    if (perception_noisy_)
+    {
+        sensor_->SetPerceptionMode(PerceptionModel::Mode::NOISY);
+    }
+
+    if (show_sensor_frustum_)
+    {
+        player_->ShowObjectSensors(true);
+    }
+
+    if (!log_file_.empty())
+    {
+        log_stream_.open(log_file_, std::ios::out | std::ios::trunc);
+        if (log_stream_.is_open())
+        {
+            log_stream_ << "time,perception_mode,target_id,perceived_distance,"
+                            "true_distance,distance_error,ego_speed,target_speed,"
+                            "commanded_speed,collision\n";
+        }
+    }
 }
 
 void ControllerACC::Step(double timeStep)
 {
     double minGapLength = LARGE_NUMBER;
     // double minSpeedDiff = 0.0; // TODO: Commented out because it is not used
-    int          minObjIndex        = -1;
     const double minDist            = 3.0;  // minimum distance to keep to lead vehicle
     const double accelerationFactor = 0.7;
+    double selectedPerceivedDistance = -1.0;
+    double selectedTrueDistance      = -1.0;
+    double selectedDistanceError     = 0.0;
+    Object* selectedObject           = nullptr;
 
     // First check if speed has been set from somewhere else (another action or controller), respect it and update setSpeed
     if (virtual_)
@@ -104,61 +182,34 @@ void ControllerACC::Step(double timeStep)
     // Lookahead distance is at least 50m or twice the distance required to stop
     // https://www.symbolab.com/solver/equation-calculator/s%5Cleft(t%5Cright)%3D2%5Cleft(m%2Bvt%2B%5Cfrac%7B1%7D%7B2%7Dat%5E%7B2%7D%5Cright)%2C%20t%3D%5Cfrac%7B-v%7D%7Ba%7D
     double lookaheadDist = MAX(50.0, 2 * minDist - pow(currentSpeed_, 2) / -object_->GetMaxDeceleration());  // (m)
-    for (size_t i = 0; i < entities_->object_.size(); i++)
+    Object* minObj = nullptr;
+    if (sensor_ != nullptr)
     {
-        Object* pivot_obj = entities_->object_[i];
-        if (pivot_obj == nullptr || pivot_obj == object_)
+        for (int i = 0; i < sensor_->GetNumberOfHits(); ++i)
         {
-            continue;
-        }
-
-        // Measure longitudinal distance to all vehicles, don't utilize costly freespace option, instead measure ref point to ref point
-        roadmanager::PositionDiff diff;
-        if (object_->pos_.Delta(&pivot_obj->pos_, diff, false, lookaheadDist) == true)  // look only double timeGap ahead
-        {
-            // path exists between position objects
-
-            // adjust longitudinal dist wrt bounding boxes
-            double adjustedGapLength = diff.ds;
-            double dHeading          = GetAbsAngleDifference(object_->pos_.GetH(), pivot_obj->pos_.GetH());
-            if (dHeading < M_PI_2)  // objects are pointing roughly in the same direction
+            const ObjectSensor::ObjectHit& hit = sensor_->GetHit(i);
+            Object* pivot_obj = hit.obj_;
+            if (pivot_obj == nullptr || pivot_obj == object_ || pivot_obj->GetType() != Object::Type::VEHICLE)
             {
-                adjustedGapLength -= (object_->boundingbox_.dimensions_.length_ / 2.0 + object_->boundingbox_.center_.x_) +
-                                     (pivot_obj->boundingbox_.dimensions_.length_ / 2.0 - pivot_obj->boundingbox_.center_.x_);
-            }
-            else  // objects are pointing roughly in the opposite direction
-            {
-                adjustedGapLength -= (object_->boundingbox_.dimensions_.length_ / 2.0 + object_->boundingbox_.center_.x_) +
-                                     (pivot_obj->boundingbox_.dimensions_.length_ / 2.0 + pivot_obj->boundingbox_.center_.x_);
+                continue;
             }
 
-            // dLaneId == 0 indicates there is linked path between object lanes, i.e. no lane changes needed
-            if (diff.dLaneId == 0 && adjustedGapLength > 0 && adjustedGapLength < minGapLength && abs(diff.dt) < lateralDist_)
+            if (hit.x_ > 0.0 && abs(hit.y_) < lateralDist_ && hit.perceived_distance_ < lookaheadDist &&
+                hit.perceived_distance_ > 0.0 &&
+                (minObj == nullptr || hit.perceived_distance_ < minGapLength))
             {
-                minGapLength = adjustedGapLength;
-                // minSpeedDiff = current_speed_ - pivot_obj->GetSpeed();
-                minObjIndex = static_cast<int>(i);  // TODO: size_t to int
-            }
-        }
-
-        // Also check for really close entities in front
-        if (static_cast<unsigned int>(minObjIndex) != i)
-        {
-            double x_local, y_local;
-            object_->FreeSpaceDistance(pivot_obj, &y_local, &x_local);
-
-            if (x_local > 0 && x_local < 1.0 + pivot_obj->boundingbox_.dimensions_.length_ + 0.5 * MAX(0.0, currentSpeed_ - pivot_obj->GetSpeed()) &&
-                y_local < 0.2 && y_local > -0.5)  // yield some more for right hand traffic
-            {
-                minGapLength = x_local;
-                // minSpeedDiff = current_speed_ - pivot_obj->GetSpeed();
-                minObjIndex = static_cast<int>(i);
+                minGapLength = hit.perceived_distance_;
+                minObj = pivot_obj;
+                selectedObject = pivot_obj;
+                selectedPerceivedDistance = hit.perceived_distance_;
+                selectedTrueDistance = hit.true_distance_;
+                selectedDistanceError = hit.distance_error_;
             }
         }
     }
 
     double acc = 0.0;
-    if (minObjIndex > -1)
+    if (minObj != nullptr)
     {
         if (minGapLength < 1)
         {
@@ -167,12 +218,12 @@ void ControllerACC::Step(double timeStep)
         else
         {
             // Follow distance = minimum distance + timeGap_ seconds
-            double speedForTimeGap = MAX(currentSpeed_, entities_->object_[static_cast<unsigned int>(minObjIndex)]->GetSpeed());
+            double speedForTimeGap = MAX(currentSpeed_, minObj->GetSpeed());
             double followDist      = minDist + timeGap_ * fabs(speedForTimeGap);  // (m)
             double dist            = minGapLength - followDist;
             double distFactor      = MIN(1.0, dist / followDist);
 
-            double dvMin = currentSpeed_ - MIN(setSpeed_, entities_->object_[static_cast<unsigned int>(minObjIndex)]->GetSpeed());
+            double dvMin = currentSpeed_ - MIN(setSpeed_, minObj->GetSpeed());
             double dvSet = currentSpeed_ - setSpeed_;
 
             acc = 2.5 * distFactor - distFactor * dvSet - (1 - distFactor) * dvMin;  // weighted combination of relative distance and speed
@@ -184,9 +235,7 @@ void ControllerACC::Step(double timeStep)
             currentSpeed_ = MIN(MAX(0.0, currentSpeed_), setSpeed_);
         }
 
-        object_->SetLookaheadSensorPosition(entities_->object_[static_cast<unsigned int>(minObjIndex)]->pos_.GetX(),
-                                            entities_->object_[static_cast<unsigned int>(minObjIndex)]->pos_.GetY(),
-                                            entities_->object_[static_cast<unsigned int>(minObjIndex)]->pos_.GetZ());
+        object_->SetLookaheadSensorPosition(minObj->pos_.GetX(), minObj->pos_.GetY(), minObj->pos_.GetZ());
     }
     else
     {
@@ -222,6 +271,20 @@ void ControllerACC::Step(double timeStep)
     else
     {
         object_->SetSpeed(currentSpeed_);
+    }
+
+    if (log_stream_.is_open())
+    {
+        log_stream_ << scenario_engine_->getSimulationTime() << ","
+                    << (perception_noisy_ ? "noisy" : "ideal") << ","
+                    << (selectedObject == nullptr ? -1 : selectedObject->GetId()) << ","
+                    << selectedPerceivedDistance << ","
+                    << selectedTrueDistance << ","
+                    << selectedDistanceError << ","
+                    << object_->GetSpeed() << ","
+                    << (selectedObject == nullptr ? 0.0 : selectedObject->GetSpeed()) << ","
+                    << currentSpeed_ << ","
+                    << (!object_->collisions_.empty() ? 1 : 0) << "\n";
     }
 
     Controller::Step(timeStep);

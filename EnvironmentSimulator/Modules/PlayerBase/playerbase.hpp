@@ -160,6 +160,12 @@ namespace scenarioengine
                             double  fovH,
                             int     maxObj);
 
+                    /**
+                    Retrieve the first ideal object sensor attached to an object.
+                    @return sensor pointer, or nullptr if no sensor is attached
+                    */
+                    ObjectSensor* GetObjectSensor(const Object *obj) const;
+
         /**
         Retrieve the total number of ideal sensors attached to any objects
         @return -1 on failure, else the number of sensors

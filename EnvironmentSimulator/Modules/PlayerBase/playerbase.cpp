@@ -1326,6 +1326,26 @@ int ScenarioPlayer::AddObjectSensor(Object* obj,
     return static_cast<int>(sensor.size()) - 1;
 }
 
+// @danilorar: Allows controller to retrieve the sensor associated with a given object.
+// @danilorar: Returns nullptr if no sensor is found for the object.
+ObjectSensor* ScenarioPlayer::GetObjectSensor(const Object* obj) const
+{
+    if (obj == nullptr)
+    {
+        return nullptr;
+    }
+
+    for (ObjectSensor* object_sensor : sensor)
+    {
+        if (object_sensor != nullptr && object_sensor->host_ == obj)
+        {
+            return object_sensor;
+        }
+    }
+
+    return nullptr;
+}
+
 int ScenarioPlayer::GetNumberOfObjectSensors() const
 {
     return static_cast<int>(sensor.size());

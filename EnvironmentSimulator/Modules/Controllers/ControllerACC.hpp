@@ -13,6 +13,7 @@
 #pragma once
 
 #include <string>
+#include <fstream>
 #include "Controller.hpp"
 #include "Entities.hpp"
 #include "vehicle.hpp"
@@ -21,6 +22,8 @@
 
 namespace scenarioengine
 {
+    class ObjectSensor;
+
     class ControllerACC : public Controller
     {
     public:
@@ -47,6 +50,7 @@ namespace scenarioengine
 
     private:
         vehicle::Vehicle vehicle_;
+        ObjectSensor* sensor_;
         bool             active_;
         double           timeGap_;  // target headway time
         double           setSpeed_;
@@ -54,6 +58,18 @@ namespace scenarioengine
         double           currentSpeed_;
         bool             setSpeedSet_;
         bool             virtual_;
+        bool             perception_noisy_;
+        double           sensor_x_;
+        double           sensor_y_;
+        double           sensor_z_;
+        double           sensor_heading_;
+        double           sensor_near_range_;
+        double           sensor_far_range_;
+        double           sensor_fov_deg_;
+        int              sensor_max_objects_;
+        bool             show_sensor_frustum_;
+        std::ofstream    log_stream_;
+        std::string      log_file_;
     };
 
     Controller* InstantiateControllerACC(void* args);
