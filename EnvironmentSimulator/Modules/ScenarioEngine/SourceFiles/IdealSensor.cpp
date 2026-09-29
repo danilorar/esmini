@@ -146,14 +146,6 @@ void ObjectSensor::Update()
             double yawHost       = GetAngleSum(host_->pos_.GetH(), pos_.h);
             hitList_[nObj_].yaw_ = GetAngleDifference(yawTarget, yawHost);
 
-            double yawRateTarget     = obj->pos_.GetHRate();
-            double yawRateHost       = host_->pos_.GetHRate();
-            hitList_[nObj_].yawRate_ = GetAngleDifference(yawRateTarget, yawRateHost);
-
-            double yawAccTarget     = obj->pos_.GetHAcc();
-            double yawAccHost       = host_->pos_.GetHAcc();
-            hitList_[nObj_].yawAcc_ = GetAngleDifference(yawAccTarget, yawAccHost);
-
             nObj_++;
         }
     }
